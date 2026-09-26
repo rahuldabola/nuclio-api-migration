@@ -1,0 +1,36 @@
+apiVersion: "nuclio.io/v1"
+kind: NuclioFunction
+metadata:
+  name: quote-worker
+  namespace: nuclio
+  labels:
+    app: quote-worker
+spec:
+  description: Kafka-triggered bulk quote processor (replaces the legacy in-process BackgroundTask)
+  runtime: "python:3.11"
+  handler: "main:handler"
+  minReplicas: 1
+  maxReplicas: 1
+  env:
+    - name: REDIS_URL
+      value: redis://redis:6379/0
+  build:
+    commands:
+      - pip install --no-cache-dir "pydantic>=2.7,<3" "redis>=5"
+  triggers:
+    quote-jobs:
+      kind: kafka-cluster
+      attributes:
+        brokers:
+          - kafka:9092
+        topics:
+          - quote-jobs
+        consumerGroup: quote-workers
+        initialOffset: earliest
+        workerAllocationMode: pool
+      numWorkers: 3
+  platform:
+    attributes:
+      network: quotes-net
+      restartPolicy:
+        name: always

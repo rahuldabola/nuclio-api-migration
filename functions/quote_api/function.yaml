@@ -1,0 +1,35 @@
+apiVersion: "nuclio.io/v1"
+kind: NuclioFunction
+metadata:
+  name: quote-api
+  namespace: nuclio
+  labels:
+    app: quote-api
+spec:
+  description: Migrated Quote API (HTTP) - contract-compatible replacement for legacy/app.py
+  runtime: "python:3.11"
+  handler: "main:handler"
+  minReplicas: 1
+  maxReplicas: 1
+  env:
+    - name: REDIS_URL
+      value: redis://redis:6379/0
+    - name: KAFKA_BROKERS
+      value: kafka:9092
+    - name: JOBS_TOPIC
+      value: quote-jobs
+  build:
+    commands:
+      - pip install --no-cache-dir "pydantic>=2.7,<3" "redis>=5" "confluent-kafka>=2.4"
+  triggers:
+    http:
+      kind: http
+      numWorkers: 4
+      attributes:
+        port: 32001
+  platform:
+    attributes:
+      # join the docker-compose network so the function can reach redis/kafka and Kong can reach it
+      network: quotes-net
+      restartPolicy:
+        name: always

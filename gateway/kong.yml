@@ -1,0 +1,90 @@
+# Kong (DB-less) in front of both implementations.
+#
+#   /v1/*          -> weighted canary across legacy and Nuclio (the cutover knob)
+#   /legacy/v1/*   -> legacy only   } pinned routes, used by the live parity run
+#   /next/v1/*     -> Nuclio only   }
+#
+# Cutover = edit the two target weights below and reload (scripts/set_canary.sh).
+# Rollback = set the Nuclio weight to 0. Clients never see a URL change.
+_format_version: "3.0"
+
+upstreams:
+  - name: quote-api-canary
+    algorithm: round-robin
+    targets:
+      - target: legacy:8000
+        weight: 20
+      - target: nuclio-nuclio-quote-api:8080
+        weight: 80
+    healthchecks:
+      active:
+        type: http
+        http_path: /healthz
+        healthy:
+          interval: 5
+          successes: 1
+        unhealthy:
+          interval: 5
+          http_failures: 2
+          tcp_failures: 2
+          timeouts: 2
+      passive:
+        unhealthy:
+          http_failures: 3
+          tcp_failures: 2
+
+services:
+  - name: quote-api
+    host: quote-api-canary
+    port: 80
+    protocol: http
+    connect_timeout: 2000
+    read_timeout: 15000
+    routes:
+      - name: quotes-v1
+        paths: ["/v1"]
+        strip_path: false
+
+  - name: quote-api-legacy
+    url: http://legacy:8000
+    routes:
+      - name: quotes-legacy
+        paths: ["/legacy"]
+        strip_path: true
+
+  - name: quote-api-next
+    url: http://nuclio-nuclio-quote-api:8080
+    routes:
+      - name: quotes-next
+        paths: ["/next"]
+        strip_path: true
+
+plugins:
+  # Every client must present an API key (header `apikey`).
+  - name: key-auth
+    config:
+      key_names: ["apikey"]
+      hide_credentials: true
+  # Per-consumer throttling, enforced at the edge instead of in each backend.
+  - name: rate-limiting
+    config:
+      minute: 6000
+      policy: local
+      limit_by: consumer
+  # Request IDs propagate to both backends and back to the client for tracing.
+  - name: correlation-id
+    config:
+      header_name: X-Request-ID
+      generator: uuid
+      echo_downstream: true
+  # Per-service/upstream latency and status metrics at :8001/metrics.
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      upstream_health_metrics: true
+
+consumers:
+  - username: demo-client
+    keyauth_credentials:
+      - key: demo-key-change-me
