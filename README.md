@@ -98,6 +98,22 @@ is invalid. The adapter handles both cases so that malformed JSON still produces
 | Cutover drill | Kong weights → 0/100 (all Nuclio) → 100/0 (rollback), checking the `X-Backend` header on every response | CI `integration` job |
 | Load | Async load test, p50/p95/p99 per backend | CI `integration` job (results in the run summary) |
 
+### Results from CI
+
+The live-stack job runs on a shared 4-vCPU GitHub runner, so read the latency numbers as a
+relative comparison, not a benchmark:
+
+- Live parity through Kong: **0 failures** across all 27 corpus cases, both cross-backend read
+  directions and bulk jobs (Kafka path included).
+- Canary at 20/80: 60 requests split **12 legacy / 48 Nuclio**, and every response was identical.
+- Cutover drill: 0/100 sent **20/20** requests to Nuclio; rollback to 100/0 sent **20/20** to legacy.
+- Load (`POST /v1/quotes`, 400 requests, concurrency 20, through Kong):
+
+| backend | req/s | p50 ms | p95 ms | p99 ms | errors |
+|---|---|---|---|---|---|
+| legacy (FastAPI, 2 uvicorn workers) | 177 | 83.3 | 262.2 | 360.4 | 0 |
+| Nuclio (4 workers) | 194 | 77.3 | 236.2 | 401.4 | 0 |
+
 ## Run it
 
 **Tests only (no Docker):**
