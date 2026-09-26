@@ -17,8 +17,10 @@ for fn in quote_api quote_worker; do
   find "build/$fn" -name __pycache__ -prune -exec rm -rf {} +
 done
 
-nuctl deploy --platform local --path build/quote_api --file build/quote_api/function.yaml
-nuctl deploy --platform local --path build/quote_worker --file build/quote_worker/function.yaml
+# Local-platform functions must belong to an existing project.
+nuctl get project quotes --platform local >/dev/null 2>&1 || nuctl create project quotes --platform local
+nuctl deploy --platform local --project-name quotes --path build/quote_api --file build/quote_api/function.yaml
+nuctl deploy --platform local --project-name quotes --path build/quote_worker --file build/quote_worker/function.yaml
 nuctl get function --platform local
 
 docker compose --profile gateway up -d --wait kong
