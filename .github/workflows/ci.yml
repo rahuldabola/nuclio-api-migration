@@ -180,7 +180,9 @@ jobs:
           git checkout -B main
           docker cp "$PWD" jenkins:/repo
           docker exec -u root jenkins chown -R jenkins:jenkins /repo
-          docker exec jenkins git config --global --add safe.directory /repo
+          docker exec -u root jenkins git config --system --add safe.directory '*'
+          docker exec jenkins git -C /repo branch -a
+          docker exec jenkins git -C /repo log -1 --oneline
           for i in $(seq 1 60); do
             code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/login || true)
             echo "jenkins login: $code"
