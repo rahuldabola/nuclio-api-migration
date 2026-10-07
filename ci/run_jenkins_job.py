@@ -6,6 +6,7 @@ Exits non-zero (after printing the console log) unless the build finishes SUCCES
 """
 
 import argparse
+import http.cookiejar
 import json
 import sys
 import time
@@ -28,9 +29,13 @@ JOB_XML = """<?xml version='1.1' encoding='UTF-8'?>
 """
 
 
+# One cookie-carrying session: Jenkins ties the CSRF crumb to the session that fetched it.
+OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+
 def call(url: str, data: bytes | None = None, headers: dict | None = None):
     req = urllib.request.Request(url, data=data, headers=headers or {}, method="POST" if data is not None else "GET")
-    return urllib.request.urlopen(req, timeout=60)
+    return OPENER.open(req, timeout=60)
 
 
 def main() -> int:
