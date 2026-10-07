@@ -168,10 +168,13 @@ metrics-server or autoscaler.
   latency, and serves `/status` (JSON), `/metrics` (Prometheus text format) and `/healthz`.
   Unit-tested with `httptest`; CI runs `go vet` and `go test -race`.
 - [`Jenkinsfile`](Jenkinsfile) is a declarative pipeline mirroring the GitHub Actions workflow
-  (Python lint and tests, Go vet and tests, Kubernetes manifest render), with each stage in a
-  container. CI loads it into a real Jenkins with the pipeline plugins and checks it with Jenkins'
-  declarative linter. The pipeline's stages are not executed on a Jenkins agent here, so
-  GitHub Actions remains the CI that actually runs the tests.
+  (Python lint and tests, Go vet and tests, Kubernetes manifest render). The CI job
+  `jenkins-pipeline` builds a Jenkins controller image with the needed tools
+  ([`ci/jenkins.Dockerfile`](ci/jenkins.Dockerfile)), lints the Jenkinsfile with Jenkins' declarative
+  linter, creates a Pipeline-from-SCM job, triggers a build
+  ([`ci/run_jenkins_job.py`](ci/run_jenkins_job.py)) and requires `SUCCESS`. Every stage runs: ruff,
+  46 pytest tests, the Go tests and the manifest render. This is a throwaway Jenkins server inside
+  CI, not a long-lived one; GitHub Actions remains the primary CI.
 
 ## Run it
 
