@@ -176,7 +176,7 @@ jobs:
       - name: Build and start Jenkins
         run: |
           docker build -f ci/jenkins.Dockerfile -t jenkins-ci ci
-          docker run -d --name jenkins -p 8080:8080             -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false" jenkins-ci
+          docker run -d --name jenkins -p 8080:8080             -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true" jenkins-ci
           git checkout -B main
           docker cp "$PWD" jenkins:/repo
           docker exec -u root jenkins chown -R jenkins:jenkins /repo
