@@ -149,3 +149,47 @@ jobs:
           kubectl -n argocd get application quote-api -o yaml || true
           kubectl -n quotes describe pods || true
           kubectl -n argo get workflows -o yaml || true
+
+  go-probe:
+    name: go probe (vet + race tests)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: probe/go.mod
+      - run: test -z "$(gofmt -l probe)"
+      - run: go vet ./...
+        working-directory: probe
+      - run: go test -race -count=1 ./...
+        working-directory: probe
+
+  jenkins-lint:
+    name: Jenkinsfile (Jenkins declarative linter)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start Jenkins with pipeline plugins
+        run: |
+          docker build -f ci/jenkins-lint.Dockerfile -t jenkins-lint ci
+          docker run -d --name jenkins -p 8080:8080 \
+            -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false" jenkins-lint
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/login || true)
+            echo "jenkins login: $code"
+            [ "$code" = "200" ] && break
+            sleep 5
+          done
+          test "$code" = "200"
+      - name: Validate Jenkinsfile
+        run: |
+          out=$(curl -s -X POST -F "jenkinsfile=<Jenkinsfile" http://localhost:8080/pipeline-model-converter/validate)
+          echo "$out"
+          echo "$out" | grep -q "successfully validated"
+      - name: Jenkins logs on failure
+        if: failure()
+        run: docker logs --tail 100 jenkins
