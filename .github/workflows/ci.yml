@@ -72,3 +72,80 @@ jobs:
           docker ps -a
           docker compose --profile gateway logs --tail 200
           for c in $(docker ps -a --format '{{.Names}}' | grep '^nuclio-'); do echo "== $c"; docker logs --tail 200 "$c"; done
+
+  kubernetes:
+    name: kubernetes (kind) + Argo CD + Argo Workflows
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ARGOCD_VERSION: v2.13.3
+      ARGO_WF_VERSION: v3.6.2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.12.0
+
+      - name: Build image and load it into the cluster
+        run: |
+          docker build -f legacy/Dockerfile -t quote-legacy:ci .
+          kind load docker-image quote-legacy:ci --name chart-testing
+
+      - name: Validate manifests (client-side dry run)
+        run: kubectl kustomize k8s | kubectl apply --dry-run=client -f -
+
+      - name: Install Argo CD
+        run: |
+          kubectl create namespace argocd
+          kubectl apply -n argocd --server-side \
+            -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml"
+          kubectl -n argocd rollout status deploy/argocd-repo-server --timeout=240s
+          kubectl -n argocd rollout status deploy/argocd-server --timeout=240s
+          kubectl -n argocd rollout status deploy/argocd-applicationset-controller --timeout=240s
+          kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=240s
+
+      - name: GitOps deploy through Argo CD (pinned to this commit)
+        run: |
+          sed "s|targetRevision: HEAD|targetRevision: ${GITHUB_SHA}|" argo/application.yaml | kubectl apply -f -
+          for i in $(seq 1 60); do
+            sync=$(kubectl -n argocd get application quote-api -o jsonpath='{.status.sync.status}' 2>/dev/null || true)
+            health=$(kubectl -n argocd get application quote-api -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+            echo "sync=$sync health=$health"
+            [ "$sync" = "Synced" ] && [ "$health" = "Healthy" ] && break
+            sleep 5
+          done
+          test "$sync" = "Synced" && test "$health" = "Healthy"
+          kubectl -n quotes get deploy,svc,pdb,pods
+
+      - name: Install Argo Workflows
+        run: |
+          kubectl create namespace argo
+          kubectl apply -n argo \
+            -f "https://github.com/argoproj/argo-workflows/releases/download/${ARGO_WF_VERSION}/install.yaml"
+          kubectl -n argo rollout status deploy/workflow-controller --timeout=240s
+          kubectl apply -f argo/workflow-rbac.yaml
+
+      - name: Run verification workflow
+        run: |
+          name=$(kubectl create -f argo/smoke-workflow.yaml -o jsonpath='{.metadata.name}')
+          echo "workflow: $name"
+          for i in $(seq 1 60); do
+            phase=$(kubectl -n argo get workflow "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            echo "phase=$phase"
+            case "$phase" in Succeeded|Failed|Error) break;; esac
+            sleep 5
+          done
+          for p in $(kubectl -n argo get pods -l workflows.argoproj.io/workflow="$name" -o name); do
+            echo "== $p"; kubectl -n argo logs "$p" -c main || true
+          done
+          test "$phase" = "Succeeded"
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n argocd get application quote-api -o yaml || true
+          kubectl -n quotes describe pods || true
+          kubectl -n argo get workflows -o yaml || true

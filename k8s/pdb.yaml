@@ -1,0 +1,9 @@
+# Keep at least one API pod up during voluntary disruptions such as node drains.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: quote-legacy
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: quote-legacy}

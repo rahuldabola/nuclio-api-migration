@@ -1,0 +1,67 @@
+# Argo Workflow: verify the deployed Quote API from inside the cluster.
+#   step 1  create a quote and read it back (contract check across replicas via shared Redis)
+#   step 2  small load run; fails the workflow on any error or if p95 exceeds the budget
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: quote-api-verify-
+  namespace: argo
+spec:
+  entrypoint: main
+  serviceAccountName: workflow-runner
+  arguments:
+    parameters:
+      - {name: target, value: "http://quote-legacy.quotes.svc.cluster.local:8000"}
+      - {name: requests, value: "200"}
+      - {name: p95-budget-ms, value: "1000"}
+  templates:
+    - name: main
+      steps:
+        - - name: smoke
+            template: smoke
+        - - name: load
+            template: load
+    - name: smoke
+      script:
+        image: python:3.11-slim
+        command: [python]
+        source: |
+          import json, urllib.request
+          base = "{{workflow.parameters.target}}"
+          body = json.dumps({"items": [{"sku": "A", "qty": 2, "unit_price": "199.99"}],
+                             "region": "IN"}).encode()
+          req = urllib.request.Request(base + "/v1/quotes", body, {"content-type": "application/json"})
+          created = urllib.request.urlopen(req)
+          quote = json.load(created)
+          assert created.status == 201, created.status
+          fetched = json.load(urllib.request.urlopen(base + "/v1/quotes/" + quote["id"]))
+          assert fetched["id"] == quote["id"]
+          print("smoke ok", quote["id"])
+    - name: load
+      script:
+        image: python:3.11-slim
+        command: [python]
+        source: |
+          import json, math, time, urllib.request
+          from concurrent.futures import ThreadPoolExecutor
+          base = "{{workflow.parameters.target}}"
+          total = int("{{workflow.parameters.requests}}")
+          budget = float("{{workflow.parameters.p95-budget-ms}}")
+          body = json.dumps({"items": [{"sku": "A", "qty": 3, "unit_price": "12.35"}],
+                             "region": "IN"}).encode()
+          def one(_):
+              req = urllib.request.Request(base + "/v1/quotes", body, {"content-type": "application/json"})
+              start = time.perf_counter()
+              try:
+                  ok = urllib.request.urlopen(req).status == 201
+              except Exception:
+                  ok = False
+              return (time.perf_counter() - start) * 1000, ok
+          with ThreadPoolExecutor(10) as pool:
+              results = list(pool.map(one, range(total)))
+          latencies = sorted(ms for ms, _ in results)
+          errors = sum(1 for _, ok in results if not ok)
+          p95 = latencies[math.ceil(0.95 * len(latencies)) - 1]
+          print(f"requests={total} errors={errors} p95={p95:.1f}ms budget={budget}ms")
+          assert errors == 0, "request errors"
+          assert p95 <= budget, "p95 over budget"
