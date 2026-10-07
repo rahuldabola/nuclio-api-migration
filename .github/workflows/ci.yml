@@ -166,18 +166,21 @@ jobs:
       - run: go test -race -count=1 ./...
         working-directory: probe
 
-  jenkins-lint:
-    name: Jenkinsfile (Jenkins declarative linter)
+  jenkins-pipeline:
+    name: Jenkinsfile (executed on a real Jenkins)
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Start Jenkins with pipeline plugins
+      - name: Build and start Jenkins
         run: |
-          docker build -f ci/jenkins-lint.Dockerfile -t jenkins-lint ci
-          docker run -d --name jenkins -p 8080:8080 \
-            -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false" jenkins-lint
+          docker build -f ci/jenkins.Dockerfile -t jenkins-ci ci
+          docker run -d --name jenkins -p 8080:8080             -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false" jenkins-ci
+          git checkout -B main
+          docker cp "$PWD" jenkins:/repo
+          docker exec -u root jenkins chown -R jenkins:jenkins /repo
+          docker exec jenkins git config --global --add safe.directory /repo
           for i in $(seq 1 60); do
             code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/login || true)
             echo "jenkins login: $code"
@@ -185,11 +188,13 @@ jobs:
             sleep 5
           done
           test "$code" = "200"
-      - name: Validate Jenkinsfile
+      - name: Lint the Jenkinsfile with Jenkins' declarative linter
         run: |
           out=$(curl -s -X POST -F "jenkinsfile=<Jenkinsfile" http://localhost:8080/pipeline-model-converter/validate)
           echo "$out"
           echo "$out" | grep -q "successfully validated"
+      - name: Run the pipeline on Jenkins
+        run: python3 ci/run_jenkins_job.py --url http://localhost:8080 --repo file:///repo
       - name: Jenkins logs on failure
         if: failure()
-        run: docker logs --tail 100 jenkins
+        run: docker logs --tail 150 jenkins
