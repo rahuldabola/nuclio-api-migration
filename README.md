@@ -141,6 +141,26 @@ write are not atomic across workers, there is no dead-letter topic for failed jo
 compose Kafka runs one broker with replication factor 1. Those are the next things I would change
 for production.
 
+## Kubernetes, Argo CD and Argo Workflows
+
+The Quote API and Redis also run on Kubernetes, deployed GitOps-style and verified by a workflow.
+The functions' own runtime is Nuclio (deployed with `nuctl`), so this path covers the FastAPI
+service, which stays the reference implementation.
+
+| Piece | What it is |
+|---|---|
+| [`k8s/`](k8s) | Kustomize manifests: `quote-legacy` Deployment (2 replicas, rolling update with `maxUnavailable: 0`, readiness and liveness probes on `/healthz`, resource requests and limits), Service, Redis, a PodDisruptionBudget |
+| [`argo/application.yaml`](argo/application.yaml) | Argo CD Application that syncs `k8s/` from this repo (automated, prune, self-heal) |
+| [`argo/smoke-workflow.yaml`](argo/smoke-workflow.yaml) | Argo Workflow run in-cluster: create and read back a quote, then a 200-request load step that fails on any error or if p95 exceeds a budget |
+
+The CI `kubernetes` job proves it on every push: creates a `kind` cluster, builds and loads the
+image, installs Argo CD and waits until the Application is `Synced` and `Healthy` at the commit
+under test, installs Argo Workflows, and requires the workflow to succeed. The latest run deployed
+2/2 replicas and passed the workflow with 0 errors (p95 28.6 ms in-cluster).
+
+Not covered: the Nuclio functions and Kafka are not deployed on this cluster, and there is no
+metrics-server or autoscaler.
+
 ## Run it
 
 **Tests only (no Docker):**
