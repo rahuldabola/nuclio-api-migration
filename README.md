@@ -161,6 +161,18 @@ under test, installs Argo Workflows, and requires the workflow to succeed. The l
 Not covered: the Nuclio functions and Kafka are not deployed on this cluster, and there is no
 metrics-server or autoscaler.
 
+## Go canary probe and Jenkins pipeline
+
+- [`probe/`](probe) is a small Go service (standard library only) that samples the gateway during
+  a cutover, reads the `X-Backend` header to report the legacy/Nuclio traffic split and p95
+  latency, and serves `/status` (JSON), `/metrics` (Prometheus text format) and `/healthz`.
+  Unit-tested with `httptest`; CI runs `go vet` and `go test -race`.
+- [`Jenkinsfile`](Jenkinsfile) is a declarative pipeline mirroring the GitHub Actions workflow
+  (Python lint and tests, Go vet and tests, Kubernetes manifest render), with each stage in a
+  container. CI loads it into a real Jenkins with the pipeline plugins and checks it with Jenkins'
+  declarative linter. The pipeline's stages are not executed on a Jenkins agent here, so
+  GitHub Actions remains the CI that actually runs the tests.
+
 ## Run it
 
 **Tests only (no Docker):**
