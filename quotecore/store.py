@@ -22,6 +22,11 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
+def derived_id(job_id: str, index: int) -> str:
+    """Stable id for the index-th quote of a job, so a redelivered job rewrites the same keys."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"quote-job:{job_id}:{index}").hex
+
+
 def quote_key(quote_id: str) -> str:
     return f"quote:{quote_id}"
 

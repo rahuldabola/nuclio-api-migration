@@ -114,6 +114,33 @@ relative comparison, not a benchmark:
 | legacy (FastAPI, 2 uvicorn workers) | 177 | 83.3 | 262.2 | 360.4 | 0 |
 | Nuclio (4 workers) | 194 | 77.3 | 236.2 | 401.4 | 0 |
 
+## Design notes: scalability and fault tolerance
+
+What the system does today, and where it stops:
+
+- **Stateless request path.** Neither the legacy service nor the Nuclio API function keeps state in
+  process. Quotes and jobs live in Redis with a 7-day TTL, so any replica can serve any request and
+  traffic can move between backends at any canary split.
+- **Durable, acknowledged hand-off for bulk work.** The API returns `202` only after Kafka
+  confirms the write (`acks=all`, idempotent producer). If the queue is down it returns `503` and
+  marks the job `failed` rather than accepting work it cannot deliver.
+- **Parallel consumers.** The `quote-jobs` topic has 3 partitions and the worker runs 3 workers in
+  one consumer group, so bulk throughput can grow with partitions and workers. `maxReplicas` is
+  currently 1 for the CI environment.
+- **Safe redelivery (at-least-once → effectively-once).** Kafka may redeliver after a rebalance.
+  The worker skips jobs already `done`, and quote ids are derived from `(job_id, position)`, so a
+  retry after a mid-job crash overwrites the same keys instead of leaving orphaned quotes
+  ([`tests/test_functions.py`](tests/test_functions.py) covers both cases).
+- **Poison messages don't block a partition.** A malformed payload is recorded as `failed` and
+  skipped instead of being retried forever.
+- **Reversible cutover.** Moving traffic or rolling back is a change to two Kong target weights,
+  rehearsed in CI (0/100 and back to 100/0, checked on every response).
+
+Known limits: Redis is a single instance (no replication or failover), the job-status check and
+write are not atomic across workers, there is no dead-letter topic for failed jobs, and the
+compose Kafka runs one broker with replication factor 1. Those are the next things I would change
+for production.
+
 ## Run it
 
 **Tests only (no Docker):**

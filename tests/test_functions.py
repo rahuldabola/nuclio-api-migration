@@ -31,6 +31,28 @@ def test_worker_is_idempotent_on_redelivery(nuclio, publisher, worker, sync_stor
     assert len(sync_store._r.keys("quote:*")) == 1
 
 
+def test_worker_retry_after_partial_failure_does_not_orphan_quotes(
+    nuclio, publisher, worker, sync_store
+):
+    body = {"quotes": [{"items": [item()], "region": "US"}, {"items": [item()], "region": "IN"}]}
+    r = nuclio.request("POST", "/v1/quote-jobs", body)
+    job_id = r.body["job_id"]
+    (_, _, value), = publisher.messages
+
+    worker(value)
+    completed = sync_store.get_job(job_id)
+    # Simulate a crash after the quotes were written but before the job was marked done.
+    sync_store.save_job(pending_job(job_id, 2))
+    quote_keys_before = set(sync_store._r.keys("quote:*"))
+
+    worker(value)  # Kafka redelivers the same message
+    retried = sync_store.get_job(job_id)
+
+    assert retried.status == "done"
+    assert retried.quote_ids == completed.quote_ids
+    assert set(sync_store._r.keys("quote:*")) == quote_keys_before
+
+
 def test_worker_marks_poison_message_failed(worker, sync_store):
     sync_store.save_job(pending_job("job-1", 1))
     worker(json.dumps({"job_id": "job-1", "quotes": [{"items": [], "region": "IN"}]}).encode())
