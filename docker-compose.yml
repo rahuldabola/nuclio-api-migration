@@ -1,5 +1,6 @@
 # Infrastructure for the migration: Redis, Kafka (KRaft), the legacy FastAPI service
-# and Kong. The Nuclio functions are deployed separately with nuctl (scripts/deploy.sh)
+# and Kong. The "analytics" profile adds the Confluent side: Schema Registry, the Java
+# Kafka Streams service, Kafka Connect and Postgres. The Nuclio functions are deployed separately with nuctl (scripts/deploy.sh)
 # and join this network as containers named nuclio-nuclio-<function>.
 
 networks:
@@ -80,3 +81,83 @@ services:
       test: ["CMD", "kong", "health"]
       interval: 3s
       retries: 20
+
+  # ---- analytics profile: Kafka Streams + Schema Registry + Kafka Connect -> Postgres ----
+
+  analytics-init:
+    image: apache/kafka:3.9.1
+    profiles: ["analytics"]
+    depends_on:
+      kafka: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for t in quote-jobs-dlq quote-requests quote-region-stats; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic $$t --partitions 3 --replication-factor 1
+        done
+    restart: "no"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.9.0
+    profiles: ["analytics"]
+    ports: ["8081:8081"]
+    depends_on:
+      kafka: { condition: service_healthy }
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/subjects > /dev/null"]
+      interval: 3s
+      retries: 40
+
+  analytics:
+    build: ./analytics
+    profiles: ["analytics"]
+    depends_on:
+      schema-registry: { condition: service_healthy }
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["analytics"]
+    environment:
+      POSTGRES_USER: quotes
+      POSTGRES_PASSWORD: quotes
+      POSTGRES_DB: analytics
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quotes -d analytics"]
+      interval: 3s
+      retries: 20
+
+  connect:
+    build: ./connect
+    profiles: ["analytics"]
+    ports: ["8083:8083"]
+    depends_on:
+      schema-registry: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+      CONNECT_GROUP_ID: quotes-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      # Only read committed output of the exactly-once Streams app.
+      CONNECT_CONSUMER_ISOLATION_LEVEL: read_committed
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors > /dev/null"]
+      interval: 5s
+      retries: 40

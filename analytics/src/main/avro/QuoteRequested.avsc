@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "QuoteRequested",
+  "namespace": "dev.rahuldabola.quotes.avro",
+  "doc": "One validated quote request from a bulk job, as published to quote-requests.",
+  "fields": [
+    {"name": "job_id", "type": "string"},
+    {"name": "position", "type": "int", "doc": "Index of the request inside its job."},
+    {"name": "region", "type": "string"},
+    {"name": "item_count", "type": "int"},
+    {"name": "gross_amount_cents", "type": "long", "doc": "Sum of qty * unit_price before discount, tax and shipping."},
+    {"name": "coupon", "type": ["null", "string"], "default": null}
+  ]
+}
