@@ -176,6 +176,42 @@ metrics-server or autoscaler.
   46 pytest tests, the Go tests and the manifest render. This is a throwaway Jenkins server inside
   CI, not a long-lived one; GitHub Actions remains the primary CI.
 
+## Java analytics: Kafka Streams, Schema Registry and Kafka Connect
+
+[`analytics/`](analytics) is a Java 21 **Kafka Streams** service that reads the same `quote-jobs`
+topic the Nuclio worker consumes, under its own consumer group, and builds a reporting pipeline on
+the Confluent stack:
+
+```
+quote-jobs (JSON) ─► validate ─┬─► quote-requests      (Avro, one event per quote, keyed by job)
+                               │        │
+                               │        └─► group by region ─► 1-min tumbling window (30 s grace)
+                               │                 ─► quote-region-stats (Avro) ─► Kafka Connect
+                               │                      JDBC sink (upsert on region + window) ─► Postgres
+                               └─► quote-jobs-dlq      (original payload + dlq.error / dlq.source.topic headers)
+```
+
+- **Validation** mirrors `quotecore.models.QuoteRequest`, so anything the API accepts parses and
+  anything else is a poison message. Poison messages go to a dead-letter topic with the reason in a
+  header instead of failing the stream or blocking the partition.
+- **Avro + Schema Registry** (`SpecificAvroSerde`, classes generated from
+  [`src/main/avro`](analytics/src/main/avro)). The registry runs with BACKWARD compatibility.
+- **Exactly-once** (`exactly_once_v2`): input offsets, the window store's changelog and output
+  records commit in one transaction, so a crash never double-counts a quote. The Connect worker reads
+  with `isolation.level=read_committed`.
+- **Kafka Connect**: the JDBC sink ([`connect/region-stats-sink.json`](connect/region-stats-sink.json))
+  upserts one row per region and window into Postgres, creating the table from the Avro schema.
+
+Tests (`mvn verify`, no Docker needed): 20 JUnit tests. Parser rules and 12 poison-message cases;
+topology tests on `TopologyTestDriver` with a mock Schema Registry covering fan-out, DLQ routing and
+headers, per-region window totals, and late events inside and after the grace period; schema
+evolution checks (an added field with a default passes BACKWARD, a required one is rejected).
+
+In CI, [`scripts/verify_analytics.sh`](scripts/verify_analytics.sh) brings up the `analytics`
+compose profile on the live stack, submits a job through Kong, publishes a poison message, and
+requires that Postgres totals match every accepted quote, that the DLQ holds the poison message with
+its reason, that the connector task is `RUNNING`, and that the registry rejects a breaking change.
+
 ## Run it
 
 **Tests only (no Docker):**
@@ -186,6 +222,8 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
+**Java analytics tests** (JDK 21 and Maven, no Docker): `cd analytics && mvn verify`
+
 **Full stack** (needs Docker and [`nuctl`](https://github.com/nuclio/nuclio/releases) 1.17.x):
 
 ```bash
@@ -194,6 +232,7 @@ python -m parity.run_live              # live parity through Kong
 bash scripts/set_canary.sh 0 100       # full cutover to Nuclio
 bash scripts/set_canary.sh 100 0       # rollback
 python -m perf.load                    # latency comparison
+bash scripts/verify_analytics.sh       # Kafka Streams + Schema Registry + Connect -> Postgres
 curl -H 'apikey: demo-key-change-me' localhost:8080/v1/quotes -H 'content-type: application/json' \
      -d '{"items":[{"sku":"A","qty":2,"unit_price":"199.99"}],"region":"IN"}'
 ```
@@ -212,5 +251,7 @@ gateway/kong.yml      DB-less Kong: canary upstream, pinned routes, auth, rate l
 tests/                unit, in-process parity, Nuclio-specific behaviour, shared parity corpus
 parity/run_live.py    live parity + canary checks through the gateway
 perf/load.py          async load test
-scripts/              deploy.sh (compose + nuctl), set_canary.sh (weight shift / rollback)
+scripts/              deploy.sh (compose + nuctl), set_canary.sh (weight shift / rollback), verify_analytics.sh
+analytics/            Java 21 Kafka Streams service: validation, DLQ, Avro events, windowed region totals
+connect/              Kafka Connect image (JDBC connector) and the Postgres sink config
 ```

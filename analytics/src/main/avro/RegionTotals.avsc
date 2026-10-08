@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "RegionTotals",
+  "namespace": "dev.rahuldabola.quotes.avro",
+  "doc": "Running aggregate held in the windowed state store.",
+  "fields": [
+    {"name": "quote_count", "type": "long"},
+    {"name": "item_count", "type": "long"},
+    {"name": "gross_amount_cents", "type": "long"}
+  ]
+}
